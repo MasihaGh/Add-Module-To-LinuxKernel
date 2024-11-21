@@ -1,3 +1,4 @@
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -61,73 +62,101 @@ static int dev_release(struct inode *inodep, struct file *filep) {
     return 0;
 }
 
-// Function to read from the queue
-static ssize_t dev_read(struct file *filep, char __user *buffer, size_t len, loff_t *offset) {
-    char ch;
+
+static ssize_t dev_read(struct file *filep, char __user *buffer, size_t len, loff_t *offset)
+{
+    static bool read_done = false; // Track if a single character was read
+
+    // Prevent multiple reads per open
+    if (read_done) {
+        read_done = false; // Reset for the next open
+        return 0; // Indicate EOF
+    }
+
+    char output[2];
     int ret;
 
-    // Acquire the lock to ensure thread safety
-    mutex_lock(&queue_lock);
+    if (len < 2) {
+        printk(KERN_ERR "myQueue: Buffer too small\n");
+        return -EINVAL;
+    }
 
-    if (count == 0) { // Queue is empty
+    mutex_lock(&queue_lock);
+    if (count == 0) {
         printk(KERN_INFO "myQueue: Queue is empty\n");
         mutex_unlock(&queue_lock);
-        return 0; // Indicate end of file
-    }
-
-    // Dequeue one character
-    ch = queue[front];
-    front = (front + 1) % QUEUE_SIZE;
-    count--;
-
-    mutex_unlock(&queue_lock);
-
-    // Copy the dequeued character to user space
-    ret = copy_to_user(buffer, &ch, 1);
-    if (ret != 0) {
-        printk(KERN_ERR "myQueue: Failed to copy data to user space\n");
-        return -EFAULT;
-    }
-
-    printk(KERN_INFO "myQueue: Read character '%c', queue size: %d\n", ch, count);
-    return 1; // Return the number of bytes read
-}
-
-// Function to write to the queue
-static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t len, loff_t *offset) {
-    char ch;
-    int ret;
-
-    if (len == 0) { // Nothing to write
         return 0;
     }
 
-    // Copy one character from user space to kernel space
-    ret = copy_from_user(&ch, buffer, 1);
+    output[0] = queue[front];
+    front = (front + 1) % QUEUE_SIZE;
+    count--;
+    mutex_unlock(&queue_lock);
+
+    output[1] = '\n';
+    ret = copy_to_user(buffer, output, 2);
     if (ret != 0) {
-        printk(KERN_ERR "myQueue: Failed to copy data from user space\n");
+        printk(KERN_ERR "myQueue: Copy to user failed\n");
         return -EFAULT;
     }
 
-    // Acquire the lock to ensure thread safety
-    mutex_lock(&queue_lock);
+    printk(KERN_INFO "myQueue: Read '%c'\n", output[0]);
+    read_done = true;
+    return 2;
+}
 
-    if (count == QUEUE_SIZE) { // Queue is full
-        printk(KERN_INFO "myQueue: Queue is full\n");
-        mutex_unlock(&queue_lock);
-        return -ENOMEM; // No space left in the queue
+
+
+
+static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t len, loff_t *offset)
+{
+    char ch;
+    int ret;
+    size_t i = 0;
+
+    if (len == 0) {
+        return 0; // Nothing to write
     }
 
-    // Enqueue the character
-    queue[rear] = ch;
-    rear = (rear + 1) % QUEUE_SIZE;
-    count++;
+    while (i < len) {
+        // Copy one character at a time from user space to kernel space
+        ret = copy_from_user(&ch, &buffer[i], sizeof(char));
+        if (ret != 0) {
+            printk(KERN_ERR "myQueue: Failed to copy data from user space\n");
+            return -EFAULT;
+        }
 
-    mutex_unlock(&queue_lock);
+        i++;
 
-    printk(KERN_INFO "myQueue: Wrote character '%c', queue size: %d\n", ch, count);
-    return 1; // Return the number of bytes written
+        // Stop processing if a newline is encountered
+        if (ch == '\n') {
+            break;
+        }
+
+        // Acquire the lock to ensure thread safety
+        mutex_lock(&queue_lock);
+
+        // Check if the queue is full
+        if (count == QUEUE_SIZE) {
+            printk(KERN_INFO "myQueue: Queue is full\n");
+            mutex_unlock(&queue_lock);
+            return -ENOMEM; // Return error: No space left in the queue
+        }
+
+        // Enqueue the character
+        queue[rear] = ch;
+        rear = (rear + 1) % QUEUE_SIZE;
+        count++;
+
+        mutex_unlock(&queue_lock);
+
+        printk(KERN_INFO "myQueue: Wrote character '%c', queue size: %d\n", ch, count);
+    }
+
+    return i; // Return the number of characters successfully written
 }
+
+
 
 // Macros to register the module initialization and exit functions
 module_init(myQueue_init);
