@@ -129,7 +129,7 @@ static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t l
         i++;
 
         // Stop processing if a newline is encountered
-        if (ch == '\n') {
+        if (ch == '\n' || ch == '\0') {
             break;
         }
 

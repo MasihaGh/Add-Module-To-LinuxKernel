@@ -1,42 +1,61 @@
 #include <stdio.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+
+#define SHM_KEY 1234       // Key for shared memory
+#define SHM_SIZE 1024      // Size of shared memory
+#define QUEUE_DEVICE "/dev/myQueue"
 
 
 void process1(int socket_pair[2]);
+void process2(int socket_pair[2]);
 
 
-int main()
-{
-    int socket_pair[2];
-
-    // Create a socket pair for inter-process communication
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, socket_pair) < 0)
-    {
-        perror("Failed to create socket pair");
-        return 1;
+// Parent process that creates shared memory and waits for Process 3
+int main() {
+    // Create shared memory
+    int shm_id = shmget(SHM_KEY, SHM_SIZE, IPC_CREAT | 0666);
+    if (shm_id == -1) {
+        perror("Failed to create shared memory");
+        exit(1);
     }
 
-    // Fork a child process
-    pid_t pid = fork();
+    // Fork processes
+    pid_t pid3 = fork();
 
-    if (pid < 0)
-    {
-        perror("Fork failed");
-        return 1;
-    }
-    else if (pid == 0)
-    {
-        // Child process (Process 1)
-        process1(socket_pair);
-    }
-    else
-    {
-        // Parent process (Process 2 will be implemented later)
-        close(socket_pair[1]); // Close unused writing socket in parent
-        printf("Parent process running...\n");
+    if (pid3 == 0) {
+        // In child process, execute process3()
+        process3();
+        exit(0);  // Exit after process3 execution
+    } else if (pid3 > 0) {
+        // Parent Process
+        // Wait for Process 3 to finish
+        waitpid(pid3, NULL, 0);
+
+        // Attach shared memory
+        char *shm_ptr = (char *)shmat(shm_id, NULL, 0);
+        if (shm_ptr == (void *)-1) {
+            perror("Failed to attach shared memory");
+            exit(1);
+        }
+
+        // Read and print shared memory values
+        printf("Data read from shared memory: %s\n", shm_ptr);
+
+        // Detach and destroy shared memory
+        shmdt(shm_ptr);
+        shmctl(shm_id, IPC_RMID, NULL);
+    } else {
+        perror("Failed to fork");
+        exit(1);
     }
 
     return 0;
@@ -79,7 +98,7 @@ void process1(int socket_pair[2])
 
 void process2(int sock_fd[2]) {
     char received_string[1024]; // Buffer to store received string
-    char *device = "/dev/myQueue"; // Path to the character device
+    char *device = QUEUE_DEVICE; // Path to the character device
     int device_fd; // File descriptor for the character device
     ssize_t write_ret; // Return value of the write operation
 
@@ -128,4 +147,54 @@ void process2(int sock_fd[2]) {
     close(sock_fd[0]);
 
     exit(EXIT_SUCCESS);
+}
+
+void process3() {
+    // Attach to shared memory
+    int shm_id = shmget(SHM_KEY, SHM_SIZE, 0666);
+    if (shm_id == -1) {
+        perror("Failed to access shared memory");
+        exit(1);
+    }
+    char *shm_ptr = (char *)shmat(shm_id, NULL, 0);
+    if (shm_ptr == (void *)-1) {
+        perror("Failed to attach to shared memory");
+        exit(1);
+    }
+
+    // Open the character device
+    int fd = open(QUEUE_DEVICE, O_RDONLY);
+    if (fd == -1) {
+        perror("Failed to open character device");
+        exit(1);
+    }
+
+    char ch;
+    int read_ret;
+    size_t shm_index = 0;
+
+    // Read from the queue character by character
+    while ((read_ret = read(fd, &ch, 1)) > 0) {
+        // Add to shared memory
+        shm_ptr[shm_index++] = ch;
+
+        // Stop if shared memory is full
+        if (shm_index >= SHM_SIZE - 1) {
+            fprintf(stderr, "Shared memory full, cannot write more data.\n");
+            break;
+        }
+    }
+
+    if (read_ret == 0) {
+        printf("Queue is empty.\n");
+    } else if (read_ret < 0) {
+        perror("Error reading from queue");
+    }
+
+    // Null-terminate the shared memory
+    shm_ptr[shm_index] = '\0';
+
+    // Cleanup
+    shmdt(shm_ptr);
+    close(fd);
 }
