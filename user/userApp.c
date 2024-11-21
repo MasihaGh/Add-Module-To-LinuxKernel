@@ -76,3 +76,56 @@ void process1(int socket_pair[2])
     // Close the writing socket after sending the data
     close(socket_pair[1]);
 }
+
+void process2(int sock_fd[2]) {
+    char received_string[1024]; // Buffer to store received string
+    char *device = "/dev/myQueue"; // Path to the character device
+    int device_fd; // File descriptor for the character device
+    ssize_t write_ret; // Return value of the write operation
+
+    // Close the unused write end of the socket pair
+    close(sock_fd[1]);
+
+    // Receive the string from process1 via the socket
+    ssize_t received_len = read(sock_fd[0], received_string, sizeof(received_string) - 1);
+    if (received_len < 0) {
+        perror("Failed to receive string from process1");
+        exit(EXIT_FAILURE);
+    }
+
+    // Null-terminate the received string
+    received_string[received_len] = '\0';
+
+    printf("Process2 received string: %s\n", received_string);
+
+    // Open the character device for writing
+    device_fd = open(device, O_WRONLY);
+    if (device_fd < 0) {
+        perror("Failed to open character device");
+        exit(EXIT_FAILURE);
+    }
+
+    // Write the string to the character device, character by character
+    for (int i = 0; i < received_len; i++) {
+        write_ret = write(device_fd, &received_string[i], 1); // Write one character
+        if (write_ret < 0) {
+            if (errno == ENOMEM) {
+                printf("Character device queue is full. Stopping write.\n");
+                break; // Stop writing if the queue is full
+            } else {
+                perror("Error writing to character device");
+                break;
+            }
+        } else {
+            printf("Wrote '%c' to the character device successfully.\n", received_string[i]);
+        }
+    }
+
+    // Close the character device
+    close(device_fd);
+
+    // Close the socket read end
+    close(sock_fd[0]);
+
+    exit(EXIT_SUCCESS);
+}
