@@ -15,48 +15,70 @@
 #define QUEUE_DEVICE "/dev/myQueue"
 
 
+// Function declarations for the processes
 void process1(int socket_pair[2]);
 void process2(int socket_pair[2]);
+void process3();
 
-
-// Parent process that creates shared memory and waits for Process 3
 int main() {
-    // Create shared memory
+    int socket_pair[2]; // Socket pair for inter-process communication
+
+    // Create a socket pair
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, socket_pair) < 0) {
+        perror("P_Failed to create socket pair");
+        exit(EXIT_FAILURE);
+    }
+
+    // Create shared memory for process3 and parent
     int shm_id = shmget(SHM_KEY, SHM_SIZE, IPC_CREAT | 0666);
     if (shm_id == -1) {
-        perror("Failed to create shared memory");
-        exit(1);
+        perror("P_Failed to create shared memory");
+        exit(EXIT_FAILURE);
     }
 
-    // Fork processes
+    // Fork Process 1
+    pid_t pid1 = fork();
+    if (pid1 == 0) {
+        process1(socket_pair);
+        exit(EXIT_SUCCESS);
+    }
+
+    // Fork Process 2
+    pid_t pid2 = fork();
+    if (pid2 == 0) {
+        process2(socket_pair);
+        exit(EXIT_SUCCESS);
+    }
+
+    // Fork Process 3
     pid_t pid3 = fork();
-
     if (pid3 == 0) {
-        // In child process, execute process3()
         process3();
-        exit(0);  // Exit after process3 execution
-    } else if (pid3 > 0) {
-        // Parent Process
-        // Wait for Process 3 to finish
-        waitpid(pid3, NULL, 0);
-
-        // Attach shared memory
-        char *shm_ptr = (char *)shmat(shm_id, NULL, 0);
-        if (shm_ptr == (void *)-1) {
-            perror("Failed to attach shared memory");
-            exit(1);
-        }
-
-        // Read and print shared memory values
-        printf("Data read from shared memory: %s\n", shm_ptr);
-
-        // Detach and destroy shared memory
-        shmdt(shm_ptr);
-        shmctl(shm_id, IPC_RMID, NULL);
-    } else {
-        perror("Failed to fork");
-        exit(1);
+        exit(EXIT_SUCCESS);
     }
+
+    // Parent Process
+    close(socket_pair[0]); // Close the unused ends of the socket
+    close(socket_pair[1]);
+
+    // Wait for all child processes to finish
+    waitpid(pid1, NULL, 0);
+    waitpid(pid2, NULL, 0);
+    waitpid(pid3, NULL, 0);
+
+    // Attach to the shared memory
+    char *shm_ptr = (char *)shmat(shm_id, NULL, 0);
+    if (shm_ptr == (void *)-1) {
+        perror("P_Failed to attach shared memory");
+        exit(EXIT_FAILURE);
+    }
+
+    // Print the content of the shared memory
+    printf("Parent Process: Data read from shared memory: %s\n", shm_ptr);
+
+    // Detach and clean up the shared memory
+    shmdt(shm_ptr);
+    shmctl(shm_id, IPC_RMID, NULL);
 
     return 0;
 }
@@ -108,7 +130,7 @@ void process2(int sock_fd[2]) {
     // Receive the string from process1 via the socket
     ssize_t received_len = read(sock_fd[0], received_string, sizeof(received_string) - 1);
     if (received_len < 0) {
-        perror("Failed to receive string from process1");
+        perror("Process 2: Failed to receive string from process1");
         exit(EXIT_FAILURE);
     }
 
@@ -120,7 +142,7 @@ void process2(int sock_fd[2]) {
     // Open the character device for writing
     device_fd = open(device, O_WRONLY);
     if (device_fd < 0) {
-        perror("Failed to open character device");
+        perror("Process 2: Failed to open character device");
         exit(EXIT_FAILURE);
     }
 
@@ -129,14 +151,14 @@ void process2(int sock_fd[2]) {
         write_ret = write(device_fd, &received_string[i], 1); // Write one character
         if (write_ret < 0) {
             if (errno == ENOMEM) {
-                printf("Character device queue is full. Stopping write.\n");
+                printf("Process 2: Character device queue is full. Stopping write.\n");
                 break; // Stop writing if the queue is full
             } else {
-                perror("Error writing to character device");
+                perror("Process 2: Error writing to character device");
                 break;
             }
         } else {
-            printf("Wrote '%c' to the character device successfully.\n", received_string[i]);
+            printf("Process 2: Wrote '%c' to the character device successfully.\n", received_string[i]);
         }
     }
 
@@ -150,51 +172,60 @@ void process2(int sock_fd[2]) {
 }
 
 void process3() {
-    // Attach to shared memory
-    int shm_id = shmget(SHM_KEY, SHM_SIZE, 0666);
+    int device_fd;         // File descriptor for the character device
+    int shm_id;            // Shared memory ID
+    char *shm_ptr;         // Pointer to shared memory
+    char buffer[2];        // Buffer to read data from the character device
+    ssize_t bytes_read;    // Number of bytes read
+
+    // Open the character device for reading
+    device_fd = open(QUEUE_DEVICE, O_RDONLY);
+    if (device_fd < 0) {
+        perror("Process 3: Failed to open character device");
+        exit(EXIT_FAILURE);
+    }
+
+    // Attach to the shared memory segment
+    shm_id = shmget(SHM_KEY, 1024, IPC_CREAT | 0666);
     if (shm_id == -1) {
-        perror("Failed to access shared memory");
-        exit(1);
+        perror("Process 3: Failed to create shared memory");
+        close(device_fd);
+        exit(EXIT_FAILURE);
     }
-    char *shm_ptr = (char *)shmat(shm_id, NULL, 0);
+    shm_ptr = (char *)shmat(shm_id, NULL, 0);
     if (shm_ptr == (void *)-1) {
-        perror("Failed to attach to shared memory");
-        exit(1);
+        perror("Process 3: Failed to attach shared memory");
+        close(device_fd);
+        exit(EXIT_FAILURE);
     }
 
-    // Open the character device
-    int fd = open(QUEUE_DEVICE, O_RDONLY);
-    if (fd == -1) {
-        perror("Failed to open character device");
-        exit(1);
-    }
+    // Initialize shared memory with an empty string
+    shm_ptr[0] = '\0';
 
-    char ch;
-    int read_ret;
-    size_t shm_index = 0;
+    printf("Process 3: Reading from character device...\n");
 
-    // Read from the queue character by character
-    while ((read_ret = read(fd, &ch, 1)) > 0) {
-        // Add to shared memory
-        shm_ptr[shm_index++] = ch;
-
-        // Stop if shared memory is full
-        if (shm_index >= SHM_SIZE - 1) {
-            fprintf(stderr, "Shared memory full, cannot write more data.\n");
+    // Read from the character device until the queue is empty
+    while (1) {
+        bytes_read = read(device_fd, buffer, sizeof(buffer));
+        if (bytes_read < 0) {
+            perror("Process 3: Error reading from queue");
+            break;
+        } else if (bytes_read == 0) {
+            printf("Process 3: Queue is empty\n");
             break;
         }
+
+        // Ensure the buffer is null-terminated before appending to shared memory
+        buffer[bytes_read] = '\0';
+        strcat(shm_ptr, buffer); // Append the read character to shared memory
+        printf("Process 3: Read '%s' from queue\n", buffer);
     }
 
-    if (read_ret == 0) {
-        printf("Queue is empty.\n");
-    } else if (read_ret < 0) {
-        perror("Error reading from queue");
-    }
-
-    // Null-terminate the shared memory
-    shm_ptr[shm_index] = '\0';
-
-    // Cleanup
+    // Detach from shared memory
     shmdt(shm_ptr);
-    close(fd);
+
+    // Close the character device
+    close(device_fd);
+
+    exit(EXIT_SUCCESS);
 }
