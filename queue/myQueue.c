@@ -10,7 +10,7 @@
 
 // Define device name and queue size
 #define DEVICE_NAME "myQueue"
-#define QUEUE_SIZE 11
+#define QUEUE_SIZE 10
 
 // Circular queue implementation
 static char queue[QUEUE_SIZE];
