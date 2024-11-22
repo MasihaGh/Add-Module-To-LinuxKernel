@@ -4,32 +4,27 @@
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/mutex.h>
-#include <linux/wait.h> // For wait queues
-#include <linux/sched.h> // For schedule_timeout, TASK_INTERRUPTIBLE
-#include <linux/jiffies.h> // For HZ (jiffies per second)
+#include <linux/wait.h>
+#include <linux/sched.h>
+#include <linux/jiffies.h>
 
-// Define device name and queue size
 #define DEVICE_NAME "myQueue"
 #define QUEUE_SIZE 10
 
-// Circular queue implementation
 static char queue[QUEUE_SIZE];
 static int front = 0, rear = 0, count = 0;
 static DEFINE_MUTEX(queue_lock);
-static DECLARE_WAIT_QUEUE_HEAD(queue_wait); // Wait queue for blocking mode
+static DECLARE_WAIT_QUEUE_HEAD(queue_wait);
 
-// Module parameter to toggle blocking/non-blocking mode
-static int blocking_mode = 0; // Default: non-blocking
+static int blocking_mode = 0;
 module_param(blocking_mode, int, S_IRUGO);
 MODULE_PARM_DESC(blocking_mode, "Enable (1) or disable (0) blocking mode");
 
-// Function prototypes
 static int dev_open(struct inode *, struct file *);
 static int dev_release(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char __user *, size_t, loff_t *);
 static ssize_t dev_write(struct file *, const char __user *, size_t, loff_t *);
 
-// File operations structure
 static struct file_operations fops = {
     .open = dev_open,
     .read = dev_read,
@@ -37,13 +32,13 @@ static struct file_operations fops = {
     .release = dev_release,
 };
 
-// Major number
 static int major_number;
 
-// Module initialization
-static int __init myQueue_init(void) {
+static int __init myQueue_init(void)
+{
     major_number = register_chrdev(0, DEVICE_NAME, &fops);
-    if (major_number < 0) {
+    if (major_number < 0)
+    {
         printk(KERN_ERR "myQueue: Failed to register device\n");
         return major_number;
     }
@@ -51,37 +46,39 @@ static int __init myQueue_init(void) {
     return 0;
 }
 
-// Module cleanup
-static void __exit myQueue_exit(void) {
+static void __exit myQueue_exit(void)
+{
     unregister_chrdev(major_number, DEVICE_NAME);
     printk(KERN_INFO "myQueue: Unregistered and exiting\n");
 }
 
-// Open function
-static int dev_open(struct inode *inodep, struct file *filep) {
+static int dev_open(struct inode *inodep, struct file *filep)
+{
     printk(KERN_INFO "myQueue: Device opened\n");
     return 0;
 }
 
-// Release function
-static int dev_release(struct inode *inodep, struct file *filep) {
+static int dev_release(struct inode *inodep, struct file *filep)
+{
     printk(KERN_INFO "myQueue: Device closed\n");
     return 0;
 }
 
-// Read function
-static ssize_t dev_read(struct file *filep, char __user *buffer, size_t len, loff_t *offset) {
+static ssize_t dev_read(struct file *filep, char __user *buffer, size_t len, loff_t *offset)
+{
     char ch;
     int ret;
 
-    if (len < 1) {
-        return -EINVAL; // Invalid buffer size
+    if (len < 1)
+    {
+        return -EINVAL;
     }
 
-    // Blocking mode: wait if the queue is empty
-    if (blocking_mode) {
+    if (blocking_mode)
+    {
         int timeout = wait_event_interruptible_timeout(queue_wait, count > 0, 10 * HZ);
-        if (timeout == 0) { // Timeout occurred
+        if (timeout == 0)
+        {
             printk(KERN_INFO "myQueue: Blocking read timed out (queue is empty)\n");
             return -EAGAIN;
         }
@@ -89,60 +86,64 @@ static ssize_t dev_read(struct file *filep, char __user *buffer, size_t len, lof
 
     mutex_lock(&queue_lock);
 
-    if (count == 0) { // Queue is empty
+    if (count == 0)
+    {
         mutex_unlock(&queue_lock);
         printk(KERN_INFO "myQueue: Queue is empty (non-blocking mode)\n");
         return 0;
     }
 
-    // Dequeue one character
     ch = queue[front];
     front = (front + 1) % QUEUE_SIZE;
     count--;
 
     mutex_unlock(&queue_lock);
 
-    // Notify any waiting writers
     wake_up_interruptible(&queue_wait);
 
-    // Copy the dequeued character to user space
     ret = copy_to_user(buffer, &ch, 1);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         printk(KERN_ERR "myQueue: Failed to copy data to user space\n");
         return -EFAULT;
     }
 
     printk(KERN_INFO "myQueue: Read character '%c', queue size: %d\n", ch, count);
-    return 1; // Return number of bytes read
+    return 1;
 }
 
-// Write function
-static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t len, loff_t *offset) {
+static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t len, loff_t *offset)
+{
     char ch;
     int ret;
     size_t i = 0;
 
-    if (len == 0) {
-        return 0; // Nothing to write
+    if (len == 0)
+    {
+        return 0;
     }
 
-    while (i < len) {
+    while (i < len)
+    {
         ret = copy_from_user(&ch, &buffer[i], sizeof(char));
-        if (ret != 0) {
+        if (ret != 0)
+        {
             printk(KERN_ERR "myQueue: Failed to copy data from user space\n");
             return -EFAULT;
         }
 
         i++;
 
-        if (ch == '\n' || ch == '\0') {
+        if (ch == '\n' || ch == '\0')
+        {
             break;
         }
 
-        // Blocking mode: wait if the queue is full
-        if (blocking_mode) {
+        if (blocking_mode)
+        {
             int timeout = wait_event_interruptible_timeout(queue_wait, count < QUEUE_SIZE, 10 * HZ);
-            if (timeout == 0) { // Timeout occurred
+            if (timeout == 0)
+            {
                 printk(KERN_INFO "myQueue: Blocking write timed out (queue is full)\n");
                 return -EAGAIN;
             }
@@ -150,29 +151,27 @@ static ssize_t dev_write(struct file *filep, const char __user *buffer, size_t l
 
         mutex_lock(&queue_lock);
 
-        if (count == QUEUE_SIZE) { // Queue is full
+        if (count == QUEUE_SIZE)
+        {
             mutex_unlock(&queue_lock);
             printk(KERN_INFO "myQueue: Queue is full (non-blocking mode)\n");
             return -ENOMEM;
         }
 
-        // Enqueue the character
         queue[rear] = ch;
         rear = (rear + 1) % QUEUE_SIZE;
         count++;
 
         mutex_unlock(&queue_lock);
 
-        // Notify any waiting readers
         wake_up_interruptible(&queue_wait);
 
         printk(KERN_INFO "myQueue: Wrote character '%c', queue size: %d\n", ch, count);
     }
 
-    return i; // Return number of bytes written
+    return i;
 }
 
-// Register module entry and exit points
 module_init(myQueue_init);
 module_exit(myQueue_exit);
 
