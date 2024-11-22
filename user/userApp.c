@@ -9,15 +9,25 @@
 #include <errno.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <time.h>
 
 #define SHM_KEY 1234  // Key for shared memory
 #define SHM_SIZE 1024 // Size of shared memory
 #define QUEUE_DEVICE "/dev/myQueue"
+#define MAX_PROCESSES 3
 
 // Function declarations for the processes
 void process1(int socket_pair[2]);
 void process2(int socket_pair[2]);
 void process3();
+
+// Structure to store the start time and end time of each process
+typedef struct
+{
+    pid_t pid;
+    time_t finished;
+    time_t terminated;
+} ProcessInfo;
 
 int main()
 {
@@ -27,6 +37,22 @@ int main()
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, socket_pair) < 0)
     {
         perror("P_Failed to create socket pair");
+        exit(EXIT_FAILURE);
+    }
+
+    // Create shared memory segment
+    int zshm_id = shmget(IPC_PRIVATE, MAX_PROCESSES * sizeof(ProcessInfo), IPC_CREAT | 0666);
+    if (zshm_id < 0)
+    {
+        perror("shmget failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // Attach shared memory
+    ProcessInfo *processes = (ProcessInfo *)shmat(zshm_id, NULL, 0);
+    if (processes == (void *)-1)
+    {
+        perror("shmat failed");
         exit(EXIT_FAILURE);
     }
 
@@ -43,6 +69,14 @@ int main()
     if (pid1 == 0)
     {
         process1(socket_pair);
+        ProcessInfo *processes = (ProcessInfo *)shmat(zshm_id, NULL, 0);
+        if (processes == (void *)-1)
+        {
+            perror("shmat failed");
+            exit(EXIT_FAILURE);
+        }
+        time(&processes[0].finished);
+        shmdt(processes);
         exit(EXIT_SUCCESS);
     }
 
@@ -51,6 +85,14 @@ int main()
     if (pid2 == 0)
     {
         process2(socket_pair);
+        ProcessInfo *processes = (ProcessInfo *)shmat(zshm_id, NULL, 0);
+        if (processes == (void *)-1)
+        {
+            perror("shmat failed");
+            exit(EXIT_FAILURE);
+        }
+        time(&processes[1].finished);
+        shmdt(processes);
         exit(EXIT_SUCCESS);
     }
 
@@ -59,6 +101,14 @@ int main()
     if (pid3 == 0)
     {
         process3();
+        ProcessInfo *processes = (ProcessInfo *)shmat(zshm_id, NULL, 0);
+        if (processes == (void *)-1)
+        {
+            perror("shmat failed");
+            exit(EXIT_FAILURE);
+        }
+        time(&processes[2].finished);
+        shmdt(processes);
         exit(EXIT_SUCCESS);
     }
 
@@ -68,8 +118,16 @@ int main()
 
     // Wait for all child processes to finish
     waitpid(pid1, NULL, 0);
+    time(&processes[0].terminated);
+    printf("Process 1 finished at: %ld, terminated at: %ld\n", processes[0].finished, processes[0].terminated);
+
     waitpid(pid2, NULL, 0);
+    time(&processes[1].terminated);
+    printf("Process 2 finished at: %ld, terminated at: %ld\n", processes[1].finished, processes[1].terminated);
+
     waitpid(pid3, NULL, 0);
+    time(&processes[2].terminated);
+    printf("Process 3 finished at: %ld, terminated at: %ld\n", processes[2].finished, processes[2].terminated);
 
     // Attach to the shared memory
     char *shm_ptr = (char *)shmat(shm_id, NULL, 0);
@@ -82,8 +140,21 @@ int main()
     // Print the content of the shared memory
     printf("Parent Process: Data read from shared memory: %s\n", shm_ptr);
 
+    // Calculate zombie time for Process 1
+    time_t zombie_time1 = (processes[0].terminated - processes[0].finished);
+    printf("Zombie time for Process 1 (PID: %d): %ld seconds\n", pid1, zombie_time1);
+
+    // Calculate zombie time for Process 2
+    time_t zombie_time2 = (processes[1].terminated - processes[1].finished);
+    printf("Zombie time for Process 2 (PID: %d): %ld seconds\n", pid2, zombie_time2);
+
+    // Calculate zombie time for Process 3
+    time_t zombie_time3 = (processes[2].terminated - processes[2].finished);
+    printf("Zombie time for Process 3 (PID: %d): %ld seconds\n", pid3, zombie_time3);
+
     // Detach and clean up the shared memory
     shmdt(shm_ptr);
+    shmdt(processes);
     shmctl(shm_id, IPC_RMID, NULL);
 
     return 0;
@@ -193,8 +264,6 @@ void process2(int sock_fd[2])
 
     // Close the socket read end
     close(sock_fd[0]);
-
-    exit(EXIT_SUCCESS);
 }
 
 void process3()
@@ -281,6 +350,4 @@ void process3()
 
     // Close the character device
     close(device_fd);
-
-    exit(EXIT_SUCCESS);
 }
